@@ -10,9 +10,8 @@ import L from "leaflet";
 import api from "../lib/api";
 import { getSocket } from "../lib/socket";
 
-// Fix default marker icons for Leaflet
+// Fix Leaflet icon paths (works with CDN images)
 delete L.Icon.Default.prototype._getIconUrl;
-
 L.Icon.Default.mergeOptions({
   iconRetinaUrl:
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png",
@@ -22,103 +21,121 @@ L.Icon.Default.mergeOptions({
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
 });
 
-// Separate click handler component
-function MapClickHandler({ reportMode, onSelect }) {
+// Map click handler component (must be a component so hooks are valid)
+function MapClickHandler({ enabled, onSelect }) {
   useMapEvents({
     click(e) {
-      if (reportMode) {
-        console.log("Map clicked:", e.latlng);
-        onSelect(e.latlng);
+      if (enabled && onSelect) {
+        // e.latlng is a Leaflet LatLng object
+        onSelect({ lat: e.latlng.lat, lng: e.latlng.lng });
       }
     },
   });
   return null;
 }
 
-export default function MapView({ reportMode, onSelectLocation }) {
+export default function MapView({ reportMode = false, onSelectLocation = () => {} }) {
   const [pos, setPos] = useState(null);
   const [reports, setReports] = useState([]);
 
-  // Ask browser for location
+  // get location (with fallback)
   useEffect(() => {
-    const fallback = { lat: 18.5204, lng: 73.8567 }; // Pune
+    const fallback = { lat: 18.5204, lng: 73.8567 }; // Pune fallback
 
-    navigator.geolocation.getCurrentPosition(
-      (loc) => {
-        const coords = {
-          lat: loc.coords.latitude,
-          lng: loc.coords.longitude,
-        };
-        setPos(coords);
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (loc) => {
+          const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          setPos(coords);
 
-        const s = getSocket();
-        if (s) s.emit("set_location", coords);
-      },
-      (err) => {
-        console.error("Location error:", err);
-        setPos(fallback);
-
-        const s = getSocket();
-        if (s) s.emit("set_location", fallback);
-      },
-      { enableHighAccuracy: false, timeout: 4000 }
-    );
+          const s = getSocket();
+          if (s && s.emit) s.emit("set_location", coords);
+        },
+        (err) => {
+          console.warn("Geolocation failed, using fallback:", err);
+          setPos(fallback);
+          const s = getSocket();
+          if (s && s.emit) s.emit("set_location", fallback);
+        },
+        { enableHighAccuracy: false, timeout: 4000, maximumAge: 0 }
+      );
+    } else {
+      // non-browser environment or no geolocation
+      setPos(fallback);
+    }
   }, []);
 
-  // Fetch nearby reports
+  // fetch nearby reports after we have pos
   useEffect(() => {
-    async function load() {
+    if (!pos) return;
+
+    let cancelled = false;
+    (async () => {
       try {
-        // use current position when available
-        const lat = pos?.lat || 18.5204;
-        const lng = pos?.lng || 73.8567;
-
-        const res = await api.get(`/reports/nearby?lat=${lat}&lng=${lng}`);
-        setReports(res.data.reports || []);
+        const res = await api.get(`/reports/nearby?lat=${pos.lat}&lng=${pos.lng}`);
+        if (!cancelled) {
+          setReports(res.data.reports || []);
+        }
       } catch (err) {
-        console.error("Nearby API failed:", err);
+        // show a console warning but continue gracefully
+        console.warn("Nearby API failed:", err?.response?.status || err.message);
+        setReports([]);
       }
-    }
+    })();
 
-    load();
+    return () => {
+      cancelled = true;
+    };
   }, [pos]);
 
-  if (!pos) return <p className="p-4">Fetching location...</p>;
+  // subscribe to socket events
+  useEffect(() => {
+    const s = getSocket();
+    if (!s) return;
+
+    function onNewReport(data) {
+      // append incoming report to list
+      setReports((prev) => {
+        // avoid duplicates
+        if (prev.find((r) => r.id === data.id)) return prev;
+        return [...prev, data];
+      });
+    }
+
+    s.on("new_report", onNewReport);
+    s.on("report_response", (d) => console.log("report_response", d));
+    s.on("report_claimed", (d) => console.log("report_claimed", d));
+
+    return () => {
+      s.off("new_report", onNewReport);
+    };
+  }, []);
+
+  if (!pos) {
+    return <div className="p-4">Fetching location...</div>;
+  }
 
   return (
-    <MapContainer
-      center={pos}
-      zoom={15}
-style={{ height: "65vh", width: "100%", zIndex: 0 }}
-    >
+    <MapContainer center={[pos.lat, pos.lng]} zoom={14} style={{ height: "100%", width: "100%" }}>
       <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        attribution='&copy; OpenStreetMap contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
-      {/* Click handler for report mode */}
-      <MapClickHandler
-        reportMode={reportMode}
-        onSelect={(latlng) => {
-          console.log("Selected location:", latlng);
-          onSelectLocation(latlng);
-        }}
-      />
+      {/* enable map clicks only when reportMode is active */}
+      <MapClickHandler enabled={reportMode} onSelect={onSelectLocation} />
 
-      {/* User location marker */}
-      {pos && (
-        <Marker position={pos}>
-          <Popup>You are here</Popup>
-        </Marker>
-      )}
+      {/* user marker */}
+      <Marker position={[pos.lat, pos.lng]}>
+        <Popup>You are here</Popup>
+      </Marker>
 
-      {/* Nearby reports */}
+      {/* existing reports */}
       {reports.map((r) => (
-        <Marker key={r.id} position={{ lat: r.latitude, lng: r.longitude }}>
+        <Marker key={r.id} position={[r.latitude, r.longitude]}>
           <Popup>
             <strong>{r.title}</strong>
-            <br />
-            {r.description}
+            <div className="text-sm">{r.description}</div>
           </Popup>
         </Marker>
       ))}
