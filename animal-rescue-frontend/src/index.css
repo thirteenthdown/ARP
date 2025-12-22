@@ -6,3 +6,13 @@
 html, body, #root {
   height: 100%;
 }
+
+/* Fix Leaflet tile layers sitting above everything */
+.leaflet-container {
+  z-index: 0 !important;
+}
+
+/* Leaflet controls */
+.leaflet-control {
+  z-index: 1 !important;
+}

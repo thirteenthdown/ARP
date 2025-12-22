@@ -14,6 +14,8 @@ const ngeohash = require('ngeohash');
 const GEOHASH_PRECISION = parseInt(process.env.GEOHASH_PRECISION || '6', 10); // default 6 (~1.2km)
 
 const app = express();
+app.use("/uploads", express.static("uploads"));
+
 app.use(express.json());
 app.use(cors());
 

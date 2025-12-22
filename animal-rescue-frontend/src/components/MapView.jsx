@@ -21,6 +21,13 @@ L.Icon.Default.mergeOptions({
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
 });
 
+// Custom red pin icon
+const redPin = L.icon({
+  iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png",
+  iconSize: [32, 32],
+  iconAnchor: [16, 32],
+});
+
 // Map click handler component (must be a component so hooks are valid)
 function MapClickHandler({ enabled, onSelect }) {
   useMapEvents({
@@ -34,7 +41,11 @@ function MapClickHandler({ enabled, onSelect }) {
   return null;
 }
 
-export default function MapView({ reportMode = false, onSelectLocation = () => {} }) {
+export default function MapView({
+  reportMode,
+  onSelectLocation,
+  selectedLocation,
+}) {
   const [pos, setPos] = useState(null);
   const [reports, setReports] = useState([]);
 
@@ -45,7 +56,10 @@ export default function MapView({ reportMode = false, onSelectLocation = () => {
     if (typeof navigator !== "undefined" && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (loc) => {
-          const coords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+          const coords = {
+            lat: loc.coords.latitude,
+            lng: loc.coords.longitude,
+          };
           setPos(coords);
 
           const s = getSocket();
@@ -72,13 +86,18 @@ export default function MapView({ reportMode = false, onSelectLocation = () => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await api.get(`/reports/nearby?lat=${pos.lat}&lng=${pos.lng}`);
+        const res = await api.get(
+          `/reports/nearby?lat=${pos.lat}&lng=${pos.lng}`
+        );
         if (!cancelled) {
           setReports(res.data.reports || []);
         }
       } catch (err) {
         // show a console warning but continue gracefully
-        console.warn("Nearby API failed:", err?.response?.status || err.message);
+        console.warn(
+          "Nearby API failed:",
+          err?.response?.status || err.message
+        );
         setReports([]);
       }
     })();
@@ -116,9 +135,13 @@ export default function MapView({ reportMode = false, onSelectLocation = () => {
   }
 
   return (
-    <MapContainer center={[pos.lat, pos.lng]} zoom={14} style={{ height: "100%", width: "100%" }}>
+    <MapContainer
+      center={[pos.lat, pos.lng]}
+      zoom={14}
+      style={{ height: "100%", width: "100%" }}
+    >
       <TileLayer
-        attribution='&copy; OpenStreetMap contributors'
+        attribution="&copy; OpenStreetMap contributors"
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
@@ -129,6 +152,11 @@ export default function MapView({ reportMode = false, onSelectLocation = () => {
       <Marker position={[pos.lat, pos.lng]}>
         <Popup>You are here</Popup>
       </Marker>
+      {selectedLocation && (
+        <Marker position={selectedLocation} icon={redPin}>
+          <Popup>Selected Location</Popup>
+        </Marker>
+      )}
 
       {/* existing reports */}
       {reports.map((r) => (
