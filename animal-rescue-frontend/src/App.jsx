@@ -4,8 +4,10 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import Login from "./pages/Login";
 import Register from "./pages/Register";
-import VerifyPhone from "./pages/VerifyPhone";
+import VerifyEmail from "./pages/VerifyEmail";
 import Home from "./pages/Home";
+import Blogs from "./pages/Blogs";
+import MyProfile from "./pages/MyProfile"; // <--- IMPORT THE REAL FILE HERE
 
 export default function App() {
   // read once from localStorage to initialise state
@@ -39,14 +41,25 @@ export default function App() {
           element={<Register onRegistered={handleSetToken} />}
         />
         <Route
-          path="/verify-phone"
-          element={<VerifyPhone onVerified={handleSetToken} />}
+          path="/verify-email"
+          element={<VerifyEmail onVerified={handleSetToken} />}
         />
 
         {/* protected */}
         <Route
           path="/"
           element={token ? <Home onLogout={handleLogout} /> : <Navigate to="/login" replace />}
+        />
+        
+        {/* New Pages */}
+        <Route 
+          path="/blogs" 
+          element={token ? <Blogs onLogout={handleLogout} /> : <Navigate to="/login" replace />} 
+        />
+        <Route 
+          path="/profile" 
+          // Pass onLogout to MyProfile so the Logout button works there too
+          element={token ? <MyProfile onLogout={handleLogout} /> : <Navigate to="/login" replace />} 
         />
 
         {/* fallback */}

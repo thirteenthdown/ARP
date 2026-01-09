@@ -3,11 +3,12 @@ import React, { useState } from "react";
 import api from "../lib/api";
 import { useNavigate, Link } from "react-router-dom";
 
+// UPDATE: These paths match the files in your public folder
 const AVATARS = [
-  "/avatars/dog-1.png",
-  "/avatars/cat-1.png",
-  "/avatars/rabbit-1.png",
-  "/avatars/parrot-1.png",
+  "/bird.png",
+  "/fox.png",
+  "/panda.png",
+  "/rabbit.png",
 ];
 
 export default function Register({ onRegistered }) {
@@ -20,7 +21,10 @@ export default function Register({ onRegistered }) {
   const [age, setAge] = useState("");
   const [favourite, setFavourite] = useState("");
   const [reason, setReason] = useState("");
+  
+  // Default to the first avatar in the new list
   const [avatar, setAvatar] = useState(AVATARS[0]);
+  
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -38,7 +42,7 @@ export default function Register({ onRegistered }) {
         age,
         favourite_animal: favourite,
         reason,
-        avatar,
+        avatar, // This sends the string (e.g., "/fox.png") to your DB
       });
 
       if (res.data && res.data.token) {
@@ -50,7 +54,7 @@ export default function Register({ onRegistered }) {
         }
       }
 
-      navigate("/verify-phone", { state: { phone } });
+      navigate("/verify-email", { state: { email } });
     } catch (err) {
       console.error(err);
       alert(err?.response?.data?.error || "Registration failed");
@@ -191,6 +195,7 @@ export default function Register({ onRegistered }) {
             height: 40px;
             object-fit: cover;
             display: block;
+            image-rendering: pixelated; /* Added to keep pixel art crisp */
         }
         /* Buttons */
         .action-btn {

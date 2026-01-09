@@ -11,7 +11,7 @@ export default function Login({ onLogin }) {
   const [identifier, setIdentifier] = useState(""); // username / phone / email
   const [password, setPassword] = useState("");
 
-  const [phone, setPhone] = useState(""); // phone for OTP
+  const [email, setEmail] = useState(""); // email for OTP
   const [otp, setOtp] = useState("");
 
   const [loading, setLoading] = useState(false);
@@ -53,14 +53,14 @@ export default function Login({ onLogin }) {
   }
 
   async function requestOtp() {
-    if (!phone) {
-      alert("Please enter a phone number (e.g. +91...)");
+    if (!email) {
+      alert("Please enter a valid email address.");
       return;
     }
     setOtpLoading(true);
     try {
-      await api.post("/auth/request-otp", { phone });
-      alert("OTP requested — check server console or SMS.");
+      await api.post("/auth/request-otp", { email });
+      alert("OTP requested — check your email inbox.");
     } catch (err) {
       console.error("request-otp error:", err);
       alert(err?.response?.data?.error || "OTP request failed");
@@ -70,13 +70,13 @@ export default function Login({ onLogin }) {
   }
 
   async function verifyOtp() {
-    if (!phone || !otp) {
-      alert("Please provide phone and OTP.");
+    if (!email || !otp) {
+      alert("Please provide email and OTP.");
       return;
     }
     setVerifyLoading(true);
     try {
-      const res = await api.post("/auth/verify-otp", { phone, code: otp });
+      const res = await api.post("/auth/verify-otp", { email, code: otp });
 
       if (res.data && res.data.token) {
         const t = res.data.token;
@@ -89,8 +89,8 @@ export default function Login({ onLogin }) {
         navigate("/");
       } else {
         if (res.data && res.data.error === "user_not_found") {
-          alert("Phone not registered. Please register first.");
-          navigate("/register", { state: { phone } });
+          alert("Email not registered. Please register first.");
+          navigate("/register", { state: { email } });
         } else {
           alert("OTP verify failed.");
         }
@@ -330,13 +330,13 @@ export default function Login({ onLogin }) {
         {mode === "otp" && (
           <div className="login-form">
             <span className="section-title">
-              [ MOBILE VERIFICATION ] <span className="section-mark">[3]</span>
+              [ EMAIL VERIFICATION ] <span className="section-mark">[3]</span>
             </span>
             <div className="input-group">
               <input
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="Phone (+91...)"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Email Address"
                 className="styled-input"
               />
             </div>

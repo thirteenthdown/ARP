@@ -4,8 +4,8 @@ const bcrypt = require("bcrypt");
 const db = require("../db");
 const jwt = require("jsonwebtoken");
 const validator = require("validator");
-const crypto = require("crypto");
-const Twilio = require("twilio");
+const auth = require("../middleware/auth");
+const { sendOtpEmail } = require("../lib/email");
 
 const router = express.Router();
 
@@ -13,102 +13,51 @@ const JWT_SECRET = process.env.JWT_SECRET || "change_this";
 const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || "12", 10);
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
-// Optional Twilio client (only if env vars present)
-let twilioClient = null;
-if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-  twilioClient = Twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-  );
-}
-
-// Try to use lib/otp if present. If not present, fallback to local dev OTP store.
-let otpLib = null;
-try {
-  otpLib = require("../lib/otp");
-} catch (e) {
-  otpLib = null;
-}
-
-// Local fallback OTP store & helpers (dev-only)
-const localOtpStore = new Map();
+// ---------------------------------------------------------
+// OTP HELPERS (In-Memory for Dev / Email Production)
+// ---------------------------------------------------------
+const localOtpStore = new Map(); // Key: email, Value: { otp, expiresAt }
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 function genOtp() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
-async function sendOtpDev(phone) {
+
+async function otpSend(email) {
   const code = genOtp();
   const expiresAt = Date.now() + OTP_TTL_MS;
-  localOtpStore.set(phone, { otp: code, expiresAt });
-  // auto-cleanup
+  localOtpStore.set(email, { otp: code, expiresAt });
+
+  // Auto-cleanup
   setTimeout(() => {
-    const e = localOtpStore.get(phone);
-    if (e && e.expiresAt <= Date.now()) localOtpStore.delete(phone);
+    const e = localOtpStore.get(email);
+    if (e && e.expiresAt <= Date.now()) localOtpStore.delete(email);
   }, OTP_TTL_MS + 2000);
-  console.log(`[DEV OTP] phone=${phone} code=${code} (expires in 5m)`);
+
+  // Send via Email (Nodemailer)
+  try {
+    await sendOtpEmail(email, code);
+  } catch (err) {
+    console.error("Failed to send email via nodemailer:", err);
+    // Fallback log for dev if email fails (or if creds missing)
+    console.log(`[DEV OTP FALLBACK] email=${email} code=${code}`);
+  }
   return code;
 }
-function validateOtpDev(phone, code) {
-  const it = localOtpStore.get(phone);
+
+function otpValidate(email, code) {
+  const it = localOtpStore.get(email);
   if (!it) return false;
+  
   if (Date.now() > it.expiresAt) {
-    localOtpStore.delete(phone);
+    localOtpStore.delete(email);
     return false;
   }
+  
   if (String(it.otp) !== String(code)) return false;
-  localOtpStore.delete(phone);
+  
+  localOtpStore.delete(email);
   return true;
-}
-
-// Wrap OTP helpers so code can use otpSend/otpValidate independent of implementation
-async function otpSend(phone) {
-  if (otpLib && typeof otpLib.sendOtpToPhone === "function") {
-    return otpLib.sendOtpToPhone(phone);
-  }
-  // Twilio path if configured and lib not provided
-  if (twilioClient && process.env.TWILIO_FROM_NUMBER) {
-    const code = genOtp();
-    const expiresAt = Date.now() + OTP_TTL_MS;
-    localOtpStore.set(phone, { otp: code, expiresAt });
-    setTimeout(() => {
-      const e = localOtpStore.get(phone);
-      if (e && e.expiresAt <= Date.now()) localOtpStore.delete(phone);
-    }, OTP_TTL_MS + 2000);
-    try {
-      await twilioClient.messages.create({
-        body: `Your Animal Rescue code: ${code}`,
-        from: process.env.TWILIO_FROM_NUMBER,
-        to: phone,
-      });
-      console.log(`OTP sent via Twilio to ${phone}`);
-      return code;
-    } catch (err) {
-      console.error("Twilio error:", err);
-      throw err;
-    }
-  }
-  // fallback dev
-  return sendOtpDev(phone);
-}
-
-function otpValidate(phone, code) {
-  if (otpLib && typeof otpLib.validateOtp === "function") {
-    return otpLib.validateOtp(phone, code);
-  }
-  if (otpLib && otpLib.otpStore && otpLib.otpStore.get) {
-    // if lib exported otpStore directly (Map-like)
-    const entry = otpLib.otpStore.get(phone);
-    if (!entry) return false;
-    if (Date.now() > (entry.expiresAt || 0)) {
-      if (otpLib.otpStore.delete) otpLib.otpStore.delete(phone);
-      return false;
-    }
-    if (String(entry.otp || entry.code) !== String(code)) return false;
-    if (otpLib.otpStore.delete) otpLib.otpStore.delete(phone);
-    return true;
-  }
-  // fallback dev
-  return validateOtpDev(phone, code);
 }
 
 // Helper: return only public user fields
@@ -117,25 +66,30 @@ function publicUser(u) {
   return {
     id: u.id,
     username: u.username,
+    email: u.email,
     favourite_animal: u.favourite_animal || null,
     avatar: u.avatar || null,
     reputation: u.reputation || 0,
     created_at: u.created_at,
+    email_verified: u.email_verified
   };
 }
 
 // ------------------------
 // POST /auth/request-otp
+// Expects: { email }
 // ------------------------
 router.post("/request-otp", async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: "phone is required" });
+  const { email } = req.body;
+  if (!email || !validator.isEmail(email)) {
+    return res.status(400).json({ error: "Valid email is required" });
+  }
 
   try {
-    await otpSend(phone);
+    await otpSend(email);
     return res.json({
       ok: true,
-      message: "OTP generated (dev: logged to server). Use /auth/verify-otp to verify.",
+      message: "OTP sent to your email. Please check your inbox (and spam).",
     });
   } catch (err) {
     console.error("request-otp send error", err);
@@ -145,28 +99,28 @@ router.post("/request-otp", async (req, res) => {
 
 // ------------------------
 // POST /auth/verify-otp
-// Behavior: verifies OTP for EXISTING USERS only.
-// If user does not exist -> returns 404 user_not_found
+// Expects: { email, code }
 // ------------------------
 router.post("/verify-otp", async (req, res) => {
-  const { phone, code } = req.body;
-  if (!phone || !code) return res.status(400).json({ error: "phone and code required" });
+  const { email, code } = req.body;
+  if (!email || !code) return res.status(400).json({ error: "email and code required" });
 
   try {
-    const ok = otpValidate(phone, code);
+    const ok = otpValidate(email, code);
     if (!ok) return res.status(400).json({ error: "INVALID_OR_EXPIRED_OTP" });
 
-    // find user by phone
-    const { rows } = await db.query("SELECT * FROM users WHERE phone = $1 LIMIT 1", [phone]);
+    // Find user by email
+    const { rows } = await db.query("SELECT * FROM users WHERE email = $1 LIMIT 1", [email]);
     if (!rows.length) return res.status(404).json({ error: "user_not_found" });
 
     const user = rows[0];
 
-    // mark phone verified
+    // Mark email verified
     try {
-      await db.query("UPDATE users SET phone_verified = true WHERE id = $1", [user.id]);
+      await db.query("UPDATE users SET email_verified = true WHERE id = $1", [user.id]);
+      user.email_verified = true; // update local object
     } catch (e) {
-      console.warn("Could not update phone_verified:", e);
+      console.warn("Could not update email_verified:", e);
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -179,15 +133,14 @@ router.post("/verify-otp", async (req, res) => {
 
 // ------------------------
 // POST /auth/register
-// (create account)
 // ------------------------
 router.post("/register", async (req, res) => {
   try {
     const {
       username,
       password,
-      phone,
-      email,
+      email,        // Now Required
+      phone,        // Optional now
       full_name,
       gender,
       age,
@@ -196,44 +149,41 @@ router.post("/register", async (req, res) => {
       avatar,
     } = req.body;
 
-    if (!username || !password || !phone) {
-      return res.status(400).json({ error: "username, password and phone required" });
+    const parsedAge = age ? parseInt(age, 10) : null;
+
+    if (!username || !password || !email) {
+        return res.status(400).json({ error: "username, password and email required" });
     }
     if (!validator.isAlphanumeric(username.replace(/[_-]/g, ""))) {
-      return res.status(400).json({ error: "username invalid" });
+      return res.status(400).json({ error: "username invalid (alphanumeric only)" });
     }
-    if (email && !validator.isEmail(email)) {
-      return res.status(400).json({ error: "invalid email" });
+    if (!validator.isEmail(email)) {
+      return res.status(400).json({ error: "invalid email format" });
     }
 
-    // uniqueness checks
+    // Check uniqueness
     const u1 = await db.query("SELECT id FROM users WHERE username = $1 LIMIT 1", [username]);
     if (u1.rows.length) return res.status(400).json({ error: "username_taken" });
 
-    const u2 = await db.query("SELECT id FROM users WHERE phone = $1 LIMIT 1", [phone]);
-    if (u2.rows.length) return res.status(400).json({ error: "phone_already_registered" });
-
-    if (email) {
-      const u3 = await db.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
-      if (u3.rows.length) return res.status(400).json({ error: "email_already_registered" });
-    }
+    const u2 = await db.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+    if (u2.rows.length) return res.status(400).json({ error: "email_already_registered" });
 
     const hashed = await bcrypt.hash(password, SALT_ROUNDS);
 
     const insertSql = `
       INSERT INTO users
-      (username, phone, email, full_name, gender, age, favourite_animal, reason, avatar, password_hash)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-      RETURNING id, username, phone, email, avatar, favourite_animal, created_at, kyc_submitted, reputation
+      (username, email, phone, full_name, gender, age, favourite_animal, reason, avatar, password_hash, email_verified)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, FALSE)
+      RETURNING id, username, email, phone, avatar, favourite_animal, created_at, kyc_submitted, reputation, email_verified
     `;
 
     const { rows } = await db.query(insertSql, [
       username,
-      phone,
-      email || null,
+      email,
+      phone || null,
       full_name || null,
       gender || null,
-      age || null,
+      parsedAge,
       favourite_animal || null,
       reason || null,
       avatar || null,
@@ -242,35 +192,42 @@ router.post("/register", async (req, res) => {
 
     const user = rows[0];
 
-    // send OTP for phone verification (non-blocking)
+    // Auto-send OTP to Email
     try {
-      await otpSend(phone);
+      await otpSend(email);
     } catch (e) {
       console.warn("Failed to send OTP after register:", e);
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    // needs_verification flag tells frontend to go to Verify Email page
     return res.status(201).json({ token, user: publicUser(user), needs_verification: true });
+
   } catch (err) {
     console.error("register error", err);
-    return res.status(500).json({ error: "server_error" });
+    return res.status(500).json({ error: err.message || "server_error" });
   }
 });
 
 // ------------------------
-// POST /auth/login (password-based)
-// Accepts username OR phone OR email in usernameOrPhoneOrEmail field
+// POST /auth/login
+// Accepts usernameOrEmail (or phone)
 // ------------------------
 router.post("/login", async (req, res) => {
-  const { usernameOrPhoneOrEmail, password } = req.body;
-  if (!usernameOrPhoneOrEmail || !password) {
-    return res.status(400).json({ error: "usernameOrPhoneOrEmail and password required" });
+  const { usernameOrEmail, password } = req.body;
+  
+  // Backwards compatibility: if frontend sends usernameOrPhoneOrEmail, verify that too
+  const identifier = usernameOrEmail || req.body.usernameOrPhoneOrEmail;
+
+  if (!identifier || !password) {
+    return res.status(400).json({ error: "username/email and password required" });
   }
 
   try {
+    // We still allow phone login if desired, but prioritize email/username
     const { rows } = await db.query(
-      `SELECT * FROM users WHERE username = $1 OR phone = $1 OR email = $1 LIMIT 1`,
-      [usernameOrPhoneOrEmail]
+      `SELECT * FROM users WHERE username = $1 OR email = $1 OR phone = $1 LIMIT 1`,
+      [identifier]
     );
 
     if (!rows.length) return res.status(400).json({ error: "invalid_credentials" });
@@ -285,6 +242,39 @@ router.post("/login", async (req, res) => {
   } catch (err) {
     console.error("login error", err);
     return res.status(500).json({ error: "server_error" });
+  }
+});
+
+// GET /auth/me - Get current user details
+router.get("/me", auth, async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "SELECT id, username, email, phone, full_name, gender, age, favourite_animal, reason, avatar, email_verified FROM users WHERE id = $1",
+      [req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "User not found" });
+    res.json({ user: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// PUT /auth/me - Update user details
+router.put("/me", auth, async (req, res) => {
+  const { full_name, gender, age, phone, email, favourite_animal, reason, avatar } = req.body;
+  try {
+    // Note: If updating email, we might want to reset email_verified to false, 
+    // but for simplicity we'll just allow update.
+    await db.query(
+      `UPDATE users 
+       SET full_name=$1, gender=$2, age=$3, phone=$4, email=$5, favourite_animal=$6, reason=$7, avatar=$8
+       WHERE id=$9`,
+      [full_name, gender, age, phone, email, favourite_animal, reason, avatar, req.user.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Update failed" });
   }
 });
 

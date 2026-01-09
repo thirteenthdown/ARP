@@ -4,17 +4,23 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
+const path = require('path'); // Added path module for safety
 const db = require('./src/db');
 
+// Import route handlers
+const blogsRoute = require("./src/routes/blogs");
 const authRoutes = require('./src/routes/auth');
 const reportsRoutesFactory = require('./src/routes/reports');
 
 const ngeohash = require('ngeohash');
 
-const GEOHASH_PRECISION = parseInt(process.env.GEOHASH_PRECISION || '6', 10); // default 6 (~1.2km)
+const GEOHASH_PRECISION = parseInt(process.env.GEOHASH_PRECISION || '6', 10);
 
 const app = express();
-app.use("/uploads", express.static("uploads"));
+
+// --- SERVE STATIC IMAGES ---
+// Uses absolute path to ensure it finds the folder correctly
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.use(express.json());
 app.use(cors());
@@ -30,6 +36,7 @@ app.get('/health/db', async (req, res) => {
   }
 });
 
+// Auth routes (don't need io)
 app.use('/auth', authRoutes);
 
 // create server and io
@@ -39,6 +46,10 @@ const io = new Server(server, {
     origin: '*',
   }
 });
+
+// --- MOVED HERE: Mount routes that require 'io' ---
+// This must be AFTER 'io' is defined
+app.use("/blogs", blogsRoute(io));
 
 // --- Secure Socket Authentication ---
 io.use((socket, next) => {
@@ -71,7 +82,6 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   console.log("Socket connected:", socket.id, "user:", socket.data.user?.id);
 
-  // track geohash
   socket.data.geohash = null;
 
   socket.on('set_location', (payload) => {
@@ -87,13 +97,10 @@ io.on('connection', (socket) => {
 
       if (prevGh && prevGh !== newGh) {
         socket.leave(prevGh);
-        console.log(`Socket ${socket.id} left ${prevGh}`);
       }
 
       socket.join(newGh);
       socket.data.geohash = newGh;
-
-      console.log(`Socket ${socket.id} joined room ${newGh} (user ${socket.data.user.id})`);
       socket.emit('location_updated', { geohash: newGh });
 
     } catch (err) {
@@ -108,11 +115,11 @@ io.on('connection', (socket) => {
 });
 
 
-// mount reports routes AFTER io created, pass io to router
+// mount reports routes AFTER io created
 const reportsRoutes = reportsRoutesFactory(io, { ngeohash, GEOHASH_PRECISION });
 app.use('/reports', reportsRoutes);
 
-// optional debug route to list sockets (dev)
+// optional debug route
 app.get('/__debug/sockets', (req, res) => {
   try {
     const clients = Array.from(io.sockets.sockets.keys());
