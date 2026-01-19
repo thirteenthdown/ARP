@@ -13,7 +13,7 @@ const AVATARS = [
 
 // Helper for date formatting
 const formatDate = (iso) => dayjs(iso).format("MMM D, YYYY HH:mm");
-const API_URL = "http://localhost:3000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export default function MyProfile({ onLogout }) {
   const navigate = useNavigate();

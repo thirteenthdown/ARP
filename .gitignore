@@ -1,0 +1,24 @@
+# Secrets
+*.pem
+*.key
+.env
+.env.production
+.env.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs
+*.log
+
+# Dependency directories
+node_modules/
+
+# OS specific
+.DS_Store
+
+# Build outputs
+dist/
+build/
+deployment_package.tar.gz

@@ -11,7 +11,7 @@ import dayjs from "dayjs";
  * Updated: Passed 'openReportModal' to MapView for popup interaction.
  */
 
-const API_URL = "http://localhost:3000"; 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000"; 
 
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
 
